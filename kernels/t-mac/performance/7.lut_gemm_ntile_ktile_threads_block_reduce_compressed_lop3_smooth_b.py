@@ -1,3 +1,6 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+# ruff: noqa
 import torch
 
 torch.random.manual_seed(0)
@@ -31,7 +34,7 @@ threads = 256
 N_Tile_factor = 1
 reduce_k = 8
 
-query_vectorize_size = 8 # as we should fetch int8
+query_vectorize_size = 8  # as we should fetch int8
 K_Tile = query_vectorize_size * 2
 
 thread_num_y = reduce_k
@@ -40,28 +43,28 @@ N_Tile = N_Tile_factor * thread_num_x
 
 print(source)
 
+
 @T.prim_func
-def main_nTile_kTile_threads_reducek(TABLE: T.Buffer(TABLE_shape, dtype_table), B: T.Buffer(B_shape, dtype_b), C: T.Buffer((M, N), dtype_table)):
-    accum_res = T.alloc_fragment(
-        (N_Tile // thread_num_x,), dtype_table, "local"
-    )
-    reduced_accum_res = T.alloc_fragment(
-    0, dtype_table, "local"
-    )
+def main_nTile_kTile_threads_reducek(TABLE: T.Buffer(TABLE_shape, dtype_table),
+                                     B: T.Buffer(B_shape, dtype_b), C: T.Buffer((M, N),
+                                                                                dtype_table)):
+    accum_res = T.alloc_fragment((N_Tile // thread_num_x,), dtype_table, "local")
+    reduced_accum_res = T.alloc_fragment(0, dtype_table, "local")
     packed_query = T.alloc_fragment((query_vectorize_size,), "int8", "local")
     query = T.alloc_fragment((query_vectorize_size * 2,), "int8", "local")
     with T.Kernel(M, T.ceildiv(N, N_Tile)) as (bx, by):
         for n in T.serial(N_Tile // thread_num_x):
             accum_res[n] = T.float16(0)
-        for kr in T.thread_binding(0, reduce_k, thread="threadIdx.y", annotations={"pragma_import_c": source}):
+        for kr in T.thread_binding(
+                0, reduce_k, thread="threadIdx.y", annotations={"pragma_import_c": source}):
             for ko in T.serial((((K // GROUP) // reduce_k) // K_Tile)):
                 for tx in T.thread_binding(0, thread_num_x, thread="threadIdx.x"):
                     for n in T.serial(N_Tile // thread_num_x):
                         for v in T.vectorized(query_vectorize_size):
-                            packed_query[v] = B[
-                                by * N_Tile + (n * thread_num_x + tx), (ko * reduce_k + kr) * (K_Tile // 2) + v
-                            ]
-                        T.call_extern("handle", "decode_i4u_to_i8s", T.address_of(packed_query[0]), T.address_of(query[0]), 16)
+                            packed_query[v] = B[by * N_Tile + (n * thread_num_x + tx),
+                                                (ko * reduce_k + kr) * (K_Tile // 2) + v]
+                        T.call_extern("handle", "decode_i4u_to_i8s", T.address_of(packed_query[0]),
+                                      T.address_of(query[0]), 16)
                         for v in T.serial(query_vectorize_size * 2):
                             accum_res[n] += TABLE[bx, (ko * reduce_k + kr) * K_Tile + v, query[v]]
 
@@ -79,8 +82,7 @@ def main_nTile_kTile_threads_reducek(TABLE: T.Buffer(TABLE_shape, dtype_table), 
                         reduced_accum_res[0],
                         kr,
                         dtype="handle",
-                    )
-                )
+                    ))
                 if kr == 0:
                     accum_res[n] = reduced_accum_res[0]
             if kr == 0:
@@ -88,9 +90,13 @@ def main_nTile_kTile_threads_reducek(TABLE: T.Buffer(TABLE_shape, dtype_table), 
                     for t in T.thread_binding(0, thread_num_x, thread="threadIdx.x"):
                         C[bx, by * N_Tile + (n * thread_num_x + t)] = accum_res[n]
 
+
 @tvm.register_func(func_name="tvm_callback_cuda_postproc", override=True)
 def tvm_callback_cuda_postproc(code, _):
-    code = code.replace("*(int2*)(B + ((((((int)blockIdx.y) * 65536) + (((int)threadIdx.x) * 2048)) + (ko * 64)) + (((int)threadIdx.y) * 8)));", "*(int2*)(B + ((((((int)blockIdx.y) * 65536) + (((int)threadIdx.y) * 8192)) + (ko * 256)) + (((int)threadIdx.x) * 8)));")
+    code = code.replace(
+        "*(int2*)(B + ((((((int)blockIdx.y) * 65536) + (((int)threadIdx.x) * 2048)) + (ko * 64)) + (((int)threadIdx.y) * 8)));",
+        "*(int2*)(B + ((((((int)blockIdx.y) * 65536) + (((int)threadIdx.y) * 8192)) + (ko * 256)) + (((int)threadIdx.x) * 8)));"
+    )
     print(code)
     return code
 

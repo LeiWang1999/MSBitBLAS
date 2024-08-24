@@ -1,4 +1,8 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+# ruff: noqa
 import torch
+
 torch.random.manual_seed(0)
 M = 1
 N = 256
@@ -12,10 +16,10 @@ weight_int4 = torch.zeros((N, K // GROUP), dtype=torch.int8, device="cuda")
 
 for n in range(N):
     for k in range(K // GROUP):
-        weight_chunk = weight_int1[n, k * GROUP : (k + 1) * GROUP]
+        weight_chunk = weight_int1[n, k * GROUP:(k + 1) * GROUP]
         weight_4bit = 0
         for i in range(GROUP):
-            weight_4bit |= (weight_chunk[i] << (GROUP-1-i))
+            weight_4bit |= (weight_chunk[i] << (GROUP - 1 - i))
         weight_int4[n, k] = weight_4bit
 
 weight_int4_packed = torch.zeros((N, (K // GROUP) // 2), dtype=torch.int8, device="cuda")
@@ -40,19 +44,32 @@ for k in range(K // GROUP):
     table_fp16[:, k, 4] = input_fp16[:, k * GROUP + 1]
     table_fp16[:, k, 5] = input_fp16[:, k * GROUP + 1] + input_fp16[:, k * GROUP + 3]
     table_fp16[:, k, 6] = input_fp16[:, k * GROUP + 1] + input_fp16[:, k * GROUP + 2]
-    table_fp16[:, k, 7] = input_fp16[:, k * GROUP + 1] + input_fp16[:, k * GROUP + 2] + input_fp16[:, k * GROUP + 3]
-    table_fp16[:, k, 8] = input_fp16[:, k * GROUP + 0] 
+    table_fp16[:, k,
+               7] = input_fp16[:, k * GROUP + 1] + input_fp16[:, k * GROUP +
+                                                              2] + input_fp16[:, k * GROUP + 3]
+    table_fp16[:, k, 8] = input_fp16[:, k * GROUP + 0]
     table_fp16[:, k, 9] = input_fp16[:, k * GROUP + 0] + input_fp16[:, k * GROUP + 3]
     table_fp16[:, k, 10] = input_fp16[:, k * GROUP + 0] + input_fp16[:, k * GROUP + 2]
-    table_fp16[:, k, 11] = input_fp16[:, k * GROUP + 0] + input_fp16[:, k * GROUP + 2] + input_fp16[:, k * GROUP + 3]
+    table_fp16[:, k,
+               11] = input_fp16[:, k * GROUP + 0] + input_fp16[:, k * GROUP +
+                                                               2] + input_fp16[:, k * GROUP + 3]
     table_fp16[:, k, 12] = input_fp16[:, k * GROUP + 0] + input_fp16[:, k * GROUP + 1]
-    table_fp16[:, k, 13] = input_fp16[:, k * GROUP + 0] + input_fp16[:, k * GROUP + 1] + input_fp16[:, k * GROUP + 3]
-    table_fp16[:, k, 14] = input_fp16[:, k * GROUP + 0] + input_fp16[:, k * GROUP + 1] + input_fp16[:, k * GROUP + 2]
-    table_fp16[:, k, 15] = input_fp16[:, k * GROUP + 0] + input_fp16[:, k * GROUP + 1] + input_fp16[:, k * GROUP + 2] + input_fp16[:, k * GROUP + 3]
+    table_fp16[:, k,
+               13] = input_fp16[:, k * GROUP + 0] + input_fp16[:, k * GROUP +
+                                                               1] + input_fp16[:, k * GROUP + 3]
+    table_fp16[:, k,
+               14] = input_fp16[:, k * GROUP + 0] + input_fp16[:, k * GROUP +
+                                                               1] + input_fp16[:, k * GROUP + 2]
+    table_fp16[:, k,
+               15] = input_fp16[:, k * GROUP +
+                                0] + input_fp16[:, k * GROUP +
+                                                1] + input_fp16[:, k * GROUP +
+                                                                2] + input_fp16[:, k * GROUP + 3]
 
 from bitblas import tvm as tvm
 from tvm import tl
 import tvm.tl.language as T
+
 TABLE_shape = (M, K // GROUP, 2**GROUP)
 dtype_table = "float16"
 # B_shape = (N, (K // GROUP) // 2)
@@ -64,19 +81,19 @@ N_Tile = 32
 chunk = 4
 reduce_k = 2
 
-query_vectorize_size = 16 # as we should fetch int8
+query_vectorize_size = 16  # as we should fetch int8
 K_Tile = query_vectorize_size * chunk
 
 thread_num_y = reduce_k
 thread_num_x = threads // thread_num_y
+
+
 @T.prim_func
-def main_nTile_kTile_threads_reducek(TABLE: T.Buffer(TABLE_shape, dtype_table), B: T.Buffer(B_shape, dtype_b), C: T.Buffer((M, N), dtype_table)):
-    accum_res = T.alloc_fragment(
-        (N_Tile // thread_num_x,), dtype_table, "local"
-    )
-    reduced_accum_res = T.alloc_fragment(
-       0, dtype_table, "local"
-    )
+def main_nTile_kTile_threads_reducek(TABLE: T.Buffer(TABLE_shape, dtype_table),
+                                     B: T.Buffer(B_shape, dtype_b), C: T.Buffer((M, N),
+                                                                                dtype_table)):
+    accum_res = T.alloc_fragment((N_Tile // thread_num_x,), dtype_table, "local")
+    reduced_accum_res = T.alloc_fragment(0, dtype_table, "local")
     query = T.alloc_fragment((query_vectorize_size,), "int8", "local")
     with T.Kernel(M, T.ceildiv(N, N_Tile), threads=threads) as (bx, by):
         for n in T.serial(N_Tile // thread_num_x):
@@ -87,11 +104,12 @@ def main_nTile_kTile_threads_reducek(TABLE: T.Buffer(TABLE_shape, dtype_table), 
                     for tx in T.thread_binding(0, thread_num_x, thread="threadIdx.x"):
                         for ki in T.serial(K_Tile // query_vectorize_size):
                             for v in T.vectorized(query_vectorize_size):
-                                query[v] = B[
-                                    by * N_Tile + (n * thread_num_x + tx), (ko * reduce_k + kr) * K_Tile + ki * query_vectorize_size + v
-                                ]
+                                query[v] = B[by * N_Tile + (n * thread_num_x + tx),
+                                             (ko * reduce_k + kr) * K_Tile +
+                                             ki * query_vectorize_size + v]
                             for v in T.serial(query_vectorize_size):
-                                accum_res[n] += TABLE[bx, (ko * reduce_k + kr) * K_Tile + ki * query_vectorize_size + v, query[v]]
+                                accum_res[n] += TABLE[bx, (ko * reduce_k + kr) * K_Tile +
+                                                      ki * query_vectorize_size + v, query[v]]
 
             for n in T.serial(N_Tile // thread_num_x):
                 T.attr(
@@ -107,13 +125,10 @@ def main_nTile_kTile_threads_reducek(TABLE: T.Buffer(TABLE_shape, dtype_table), 
                         reduced_accum_res[0],
                         kr,
                         dtype="handle",
-                    )
-                )
+                    ))
             for n in T.serial(N_Tile // thread_num_x):
                 for t in T.thread_binding(0, thread_num_x, thread="threadIdx.x"):
-                    C[bx, by * N_Tile + (n * thread_num_x + t)] = reduced_accum_res[
-                        0
-                    ]
+                    C[bx, by * N_Tile + (n * thread_num_x + t)] = reduced_accum_res[0]
 
 
 @tvm.register_func(func_name="tvm_callback_cuda_postproc", override=True)

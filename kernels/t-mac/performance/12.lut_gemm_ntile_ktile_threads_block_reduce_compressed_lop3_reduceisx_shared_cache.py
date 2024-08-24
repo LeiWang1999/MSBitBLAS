@@ -1,3 +1,6 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+# ruff: noqa
 import torch
 
 torch.random.manual_seed(0)
@@ -23,7 +26,6 @@ lop3_info = get_lop3_intrin_group(
 
 source = lop3_info["c_source"]
 
-
 TABLE_shape = (M, K // GROUP, 2**GROUP)
 dtype_table = "float16"
 B_shape = (N, (K // GROUP) // 2)
@@ -32,32 +34,31 @@ num_warps = 2
 warp_size = 32
 threads = num_warps * warp_size
 
-query_vectorize_size = 8 # as we should fetch int8
+query_vectorize_size = 8  # as we should fetch int8
 K_Tile = query_vectorize_size * 2
 
 thread_num_x = warp_size
 N_Chunk = 1
 N_Tile = num_warps * N_Chunk
 
-
 print("N_Tile:", N_Tile, "K_Tile:", K_Tile, "thread_num_x:", thread_num_x)
 assert (((K // GROUP) // thread_num_x) // K_Tile) > 0, "K_Tile is too large"
 
+
 @T.prim_func
-def main_nTile_kTile_threads_reducek(TABLE: T.Buffer(TABLE_shape, dtype_table), B: T.Buffer(B_shape, dtype_b), C: T.Buffer((M, N), dtype_table)):
-    accum_res = T.alloc_fragment(
-        (N_Tile // num_warps), dtype_table, "local"
-    )
-    reduced_accum_res = T.alloc_fragment(
-       0, dtype_table, "local"
-    )
+def main_nTile_kTile_threads_reducek(TABLE: T.Buffer(TABLE_shape, dtype_table),
+                                     B: T.Buffer(B_shape, dtype_b), C: T.Buffer((M, N),
+                                                                                dtype_table)):
+    accum_res = T.alloc_fragment((N_Tile // num_warps), dtype_table, "local")
+    reduced_accum_res = T.alloc_fragment(0, dtype_table, "local")
     packed_query = T.alloc_fragment((query_vectorize_size,), "int8", "local")
     query = T.alloc_fragment((query_vectorize_size * 2,), "int8", "local")
     cached_table = T.alloc_fragment((K_Tile * warp_size, 2**GROUP), dtype_table, "shared")
     with T.Kernel(M, T.ceildiv(N, N_Tile), threads=threads) as (bx, by):
         for n in T.serial(N_Tile // num_warps):
             accum_res[n] = T.float16(0)
-        for kr in T.thread_binding(0, warp_size, thread="threadIdx.x", annotations={"pragma_import_c": source}):
+        for kr in T.thread_binding(
+                0, warp_size, thread="threadIdx.x", annotations={"pragma_import_c": source}):
             for ko in T.serial((((K // GROUP) // warp_size) // K_Tile)):
                 for v_outer in T.serial((warp_size * K_Tile * 16) // (num_warps * warp_size * 8)):
                     for v0 in T.thread_binding(0, num_warps, thread="threadIdx.y"):
@@ -67,15 +68,18 @@ def main_nTile_kTile_threads_reducek(TABLE: T.Buffer(TABLE_shape, dtype_table), 
                                 o_v2 = (v1 % 2) * 8 + v2
                                 o_v1 = (v1 // 2)
                                 o_v0 = v_outer * num_warps + v0
-                                cached_table[o_v0 * K_Tile + o_v1, o_v2] = TABLE[bx, (ko * warp_size + o_v0) * K_Tile + o_v1, o_v2]
+                                cached_table[o_v0 * K_Tile + o_v1,
+                                             o_v2] = TABLE[bx,
+                                                           (ko * warp_size + o_v0) * K_Tile + o_v1,
+                                                           o_v2]
 
                 for no in T.serial(N_Tile // num_warps):
                     for ni in T.thread_binding(0, num_warps, thread="threadIdx.y"):
                         for v in T.vectorized(query_vectorize_size):
-                            packed_query[v] = B[
-                                by * N_Tile + no * num_warps + ni, (ko * warp_size + kr) * query_vectorize_size + v
-                            ]
-                        T.call_extern("handle", "decode_i4u_to_i8s", T.address_of(packed_query[0]), T.address_of(query[0]), 16)
+                            packed_query[v] = B[by * N_Tile + no * num_warps + ni,
+                                                (ko * warp_size + kr) * query_vectorize_size + v]
+                        T.call_extern("handle", "decode_i4u_to_i8s", T.address_of(packed_query[0]),
+                                      T.address_of(query[0]), 16)
                         for v in T.serial(query_vectorize_size * 2):
                             # reshape_buffer
                             ideal_access = (v % 2) + kr * 2 + query[v] * 64 + (v // 2) * 1024
@@ -97,13 +101,11 @@ def main_nTile_kTile_threads_reducek(TABLE: T.Buffer(TABLE_shape, dtype_table), 
                             reduced_accum_res[0],
                             kr,
                             dtype="handle",
-                        )
-                    )
+                        ))
                     if kr == 0:
                         accum_res[no] = reduced_accum_res[0]
                     if kr == 0:
                         C[bx, by * N_Tile + no * num_warps + ni] = accum_res[no]
-
 
 
 @tvm.register_func(func_name="tvm_callback_cuda_postproc", override=True)
@@ -111,6 +113,7 @@ def tvm_callback_cuda_postproc(code, _):
     # code = code.replace("(accum_res[0] + cached_table[(((((int)threadIdx.x) * 256) + (v * 16)) + ((int)query[v]))]);", "(accum_res[0] + cached_table[((((v / 2) * 1024) + ((int)query[v] * 64)) + (((int)threadIdx.x) * 2)) + (v % 2)]);")
     print(code)
     return code
+
 
 print(main_nTile_kTile_threads_reducek)
 mod, params = tl.lower(main_nTile_kTile_threads_reducek)

@@ -1,3 +1,6 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+# ruff: noqa
 import torch
 import itertools
 import tqdm
@@ -53,7 +56,6 @@ min_time = 1e9
 min_combination = None
 sucess_combinations = []
 
-
 # out = mod.run_once()
 cuda_table = table_fp16.cuda()
 cuda_weight = weight_int4_interleaved.cuda()
@@ -64,25 +66,25 @@ for combination in pbar:
     threads = combination["threads"]
     N_Tile_factor = combination["N_Tile_factor"]
     reduce_k = combination["reduce_k"]
-    
-    query_vectorize_size = 8 # as we should fetch int8
+
+    query_vectorize_size = 8  # as we should fetch int8
     K_Tile = query_vectorize_size * 2
 
     thread_num_y = reduce_k
     thread_num_x = threads // thread_num_y
     N_Tile = N_Tile_factor * thread_num_x
     try:
-        assert (((K // GROUP) // reduce_k) // K_Tile) > 0, "assertion failed, please adjust the parameters"
+        assert (((K // GROUP) // reduce_k) //
+                K_Tile) > 0, "assertion failed, please adjust the parameters"
         assert (N_Tile // thread_num_x) > 0, "assertion failed, please adjust the parameters"
-        
+
+        # fmt: off
         @T.prim_func
-        def main_nTile_kTile_threads_reducek(TABLE: T.Buffer(TABLE_shape, dtype_table), B: T.Buffer(B_shape, dtype_b), C: T.Buffer((M, N), dtype_table)):
-            accum_res = T.alloc_fragment(
-                (N_Tile // thread_num_x,), dtype_table, "local"
-            )
-            reduced_accum_res = T.alloc_fragment(
-            0, dtype_table, "local"
-            )
+        def main_nTile_kTile_threads_reducek(TABLE: T.Buffer(TABLE_shape, dtype_table),
+                                             B: T.Buffer(B_shape, dtype_b), C: T.Buffer(
+                                                 (M, N), dtype_table)):
+            accum_res = T.alloc_fragment((N_Tile // thread_num_x,), dtype_table, "local")
+            reduced_accum_res = T.alloc_fragment(0, dtype_table, "local")
             packed_query = T.alloc_fragment((query_vectorize_size,), "int8", "local")
             query = T.alloc_fragment((query_vectorize_size * 2,), "int8", "local")
             cached_table = T.alloc_fragment((reduce_k * K_Tile, 2**GROUP), dtype_table, "shared")
@@ -90,7 +92,8 @@ for combination in pbar:
                 tx = T.launch_thread("threadIdx.x", thread_num_x)
                 for n in T.serial(N_Tile // thread_num_x):
                     accum_res[n] = T.float16(0)
-                for kr in T.thread_binding(0, reduce_k, thread="threadIdx.y", annotations={"pragma_import_c": source}):
+                for kr in T.thread_binding(
+                        0, reduce_k, thread="threadIdx.y", annotations={"pragma_import_c": source}):
                     for ko in T.serial((((K // GROUP) // reduce_k) // K_Tile)):
                         for v0 in T.thread_binding(0, reduce_k, thread="threadIdx.y"):
                             for v1 in T.thread_binding(0, thread_num_x, thread="threadIdx.x"):
@@ -98,14 +101,16 @@ for combination in pbar:
                                     o_v2 = (v1 % 2) * 8 + v2
                                     o_v1 = (v1 // 2)
                                     o_v0 = v0
-                                    cached_table[o_v0 * K_Tile + o_v1, o_v2] = TABLE[bx, (ko * reduce_k + o_v0) * K_Tile + o_v1, o_v2]
+                                    cached_table[o_v0 * K_Tile + o_v1,
+                                                 o_v2] = TABLE[bx, (ko * reduce_k + o_v0) * K_Tile +
+                                                               o_v1, o_v2]
                         T.tvm_storage_sync("shared")
                         for n in T.serial(N_Tile // thread_num_x):
                             for v in T.vectorized(query_vectorize_size):
-                                packed_query[v] = B[
-                                    by * N_Tile + (n * thread_num_x + tx), (ko * reduce_k + kr) * (K_Tile // 2) + v
-                                ]
-                            T.call_extern("handle", "decode_i4u_to_i8s", T.address_of(packed_query[0]), T.address_of(query[0]), 16)
+                                packed_query[v] = B[by * N_Tile + (n * thread_num_x + tx),
+                                                    (ko * reduce_k + kr) * (K_Tile // 2) + v]
+                            T.call_extern("handle", "decode_i4u_to_i8s",
+                                          T.address_of(packed_query[0]), T.address_of(query[0]), 16)
                             for v in T.serial(query_vectorize_size * 2):
                                 accum_res[n] += cached_table[kr * K_Tile + v, query[v]]
 
@@ -123,8 +128,7 @@ for combination in pbar:
                                 reduced_accum_res[0],
                                 kr,
                                 dtype="handle",
-                            )
-                        )
+                            ))
                         if kr == 0:
                             accum_res[n] = reduced_accum_res[0]
                     if kr == 0:
@@ -132,7 +136,7 @@ for combination in pbar:
                             for t in T.thread_binding(0, thread_num_x, thread="threadIdx.x"):
                                 C[bx, by * N_Tile + (n * thread_num_x + t)] = accum_res[n]
 
-
+        # fmt: on
         mod, params = tl.lower(main_nTile_kTile_threads_reducek)
         mod = tl.Profiler(mod, params, [2], tl.TensorSupplyType.Integer)
 

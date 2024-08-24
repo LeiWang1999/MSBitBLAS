@@ -2,7 +2,6 @@
 # Licensed under the MIT License.
 
 from bitblas import tvm as tvm
-import bitblas.testing
 from tvm import tl
 
 
@@ -96,7 +95,6 @@ def run_gemm(
         return C
 
     mod.assert_allclose(ref_program)
-
 
 
 if __name__ == "__main__":

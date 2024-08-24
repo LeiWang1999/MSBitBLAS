@@ -1,3 +1,6 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+# ruff: noqa
 import torch
 
 torch.random.manual_seed(0)
@@ -13,10 +16,10 @@ weight_int4 = torch.zeros((K, N // GROUP), dtype=torch.int8, device="cuda")
 
 for k in range(K):
     for n in range(N // GROUP):
-        weight_chunk = weight_int1[k, n * GROUP : (n + 1) * GROUP]
+        weight_chunk = weight_int1[k, n * GROUP:(n + 1) * GROUP]
         weight_4bit = 0
         for i in range(GROUP):
-            weight_4bit |= (weight_chunk[i] << (GROUP-1-i))
+            weight_4bit |= (weight_chunk[i] << (GROUP - 1 - i))
         weight_int4[k, n] = weight_4bit
 
 weight_int4_packed = torch.zeros((K, (N // GROUP) // 2), dtype=torch.int8, device="cuda")
@@ -28,7 +31,9 @@ for k in range(K):
         weight_int4_packed[k, n] = weight_8bit
 
 from bitblas.quantization.utils import interleave_weight
-weight_int4_interleaved = torch.from_numpy(interleave_weight(weight_int4_packed.cpu().numpy(), 4, "int8")).cuda()
+
+weight_int4_interleaved = torch.from_numpy(
+    interleave_weight(weight_int4_packed.cpu().numpy(), 4, "int8")).cuda()
 
 ref_output = torch.matmul(input_fp16, weight_int1.to(torch.float16))
 
@@ -44,15 +49,27 @@ for k in range(K // GROUP):
     table_fp16[:, k, 4] = input_fp16[:, k * GROUP + 1]
     table_fp16[:, k, 5] = input_fp16[:, k * GROUP + 1] + input_fp16[:, k * GROUP + 3]
     table_fp16[:, k, 6] = input_fp16[:, k * GROUP + 1] + input_fp16[:, k * GROUP + 2]
-    table_fp16[:, k, 7] = input_fp16[:, k * GROUP + 1] + input_fp16[:, k * GROUP + 2] + input_fp16[:, k * GROUP + 3]
-    table_fp16[:, k, 8] = input_fp16[:, k * GROUP + 0] 
+    table_fp16[:, k,
+               7] = input_fp16[:, k * GROUP + 1] + input_fp16[:, k * GROUP +
+                                                              2] + input_fp16[:, k * GROUP + 3]
+    table_fp16[:, k, 8] = input_fp16[:, k * GROUP + 0]
     table_fp16[:, k, 9] = input_fp16[:, k * GROUP + 0] + input_fp16[:, k * GROUP + 3]
     table_fp16[:, k, 10] = input_fp16[:, k * GROUP + 0] + input_fp16[:, k * GROUP + 2]
-    table_fp16[:, k, 11] = input_fp16[:, k * GROUP + 0] + input_fp16[:, k * GROUP + 2] + input_fp16[:, k * GROUP + 3]
+    table_fp16[:, k,
+               11] = input_fp16[:, k * GROUP + 0] + input_fp16[:, k * GROUP +
+                                                               2] + input_fp16[:, k * GROUP + 3]
     table_fp16[:, k, 12] = input_fp16[:, k * GROUP + 0] + input_fp16[:, k * GROUP + 1]
-    table_fp16[:, k, 13] = input_fp16[:, k * GROUP + 0] + input_fp16[:, k * GROUP + 1] + input_fp16[:, k * GROUP + 3]
-    table_fp16[:, k, 14] = input_fp16[:, k * GROUP + 0] + input_fp16[:, k * GROUP + 1] + input_fp16[:, k * GROUP + 2]
-    table_fp16[:, k, 15] = input_fp16[:, k * GROUP + 0] + input_fp16[:, k * GROUP + 1] + input_fp16[:, k * GROUP + 2] + input_fp16[:, k * GROUP + 3]
+    table_fp16[:, k,
+               13] = input_fp16[:, k * GROUP + 0] + input_fp16[:, k * GROUP +
+                                                               1] + input_fp16[:, k * GROUP + 3]
+    table_fp16[:, k,
+               14] = input_fp16[:, k * GROUP + 0] + input_fp16[:, k * GROUP +
+                                                               1] + input_fp16[:, k * GROUP + 2]
+    table_fp16[:, k,
+               15] = input_fp16[:, k * GROUP +
+                                0] + input_fp16[:, k * GROUP +
+                                                1] + input_fp16[:, k * GROUP +
+                                                                2] + input_fp16[:, k * GROUP + 3]
 
 from bitblas import tvm as tvm
 from tvm import tl
@@ -77,7 +94,7 @@ threads = 256
 N_Tile_factor = 1
 reduce_k = 8
 
-query_vectorize_size = 8 # as we should fetch int8
+query_vectorize_size = 8  # as we should fetch int8
 K_Tile = query_vectorize_size * 2
 
 thread_num_y = reduce_k
@@ -87,31 +104,31 @@ N_Tile = N_Tile_factor * thread_num_x
 assert (((K // GROUP) // reduce_k) // K_Tile) > 0, "assertion failed, please adjust the parameters"
 assert (N_Tile // thread_num_x) > 0, "assertion failed, please adjust the parameters"
 
-print("N_Tile:", N_Tile, "K_Tile:", K_Tile, "thread_num_x:", thread_num_x, "thread_num_y:", thread_num_y)
+print("N_Tile:", N_Tile, "K_Tile:", K_Tile, "thread_num_x:", thread_num_x, "thread_num_y:",
+      thread_num_y)
 
 
 @T.prim_func
-def main_nTile_kTile_threads_reducek(TABLE: T.Buffer(TABLE_shape, dtype_table), B: T.Buffer(B_shape, dtype_b), C: T.Buffer((M, N), dtype_table)):
-    accum_res = T.alloc_fragment(
-        (N_Tile // thread_num_x,), dtype_table, "local"
-    )
-    reduced_accum_res = T.alloc_fragment(
-       0, dtype_table, "local"
-    )
+def main_nTile_kTile_threads_reducek(TABLE: T.Buffer(TABLE_shape, dtype_table),
+                                     B: T.Buffer(B_shape, dtype_b), C: T.Buffer((M, N),
+                                                                                dtype_table)):
+    accum_res = T.alloc_fragment((N_Tile // thread_num_x,), dtype_table, "local")
+    reduced_accum_res = T.alloc_fragment(0, dtype_table, "local")
     packed_query = T.alloc_fragment((query_vectorize_size,), "int8", "local")
     query = T.alloc_fragment((query_vectorize_size * 2,), "int8", "local")
     with T.Kernel(M, T.ceildiv(N, N_Tile), threads=threads) as (bx, by):
         for n in T.serial(N_Tile // thread_num_x):
             accum_res[n] = T.float16(0)
-        for kr in T.thread_binding(0, reduce_k, thread="threadIdx.y", annotations={"pragma_import_c": source}):
+        for kr in T.thread_binding(
+                0, reduce_k, thread="threadIdx.y", annotations={"pragma_import_c": source}):
             for ko in T.serial((((K // GROUP) // reduce_k) // K_Tile)):
                 for tx in T.thread_binding(0, thread_num_x, thread="threadIdx.x"):
                     for n in T.serial(N_Tile // thread_num_x):
                         for v in T.serial(query_vectorize_size):
-                            packed_query[v] = B[
-                                (ko * reduce_k + kr) * (K_Tile // 2) + v, by * N_Tile + (n * thread_num_x + tx)
-                            ]
-                        T.call_extern("handle", "decode_i4u_to_i8s", T.address_of(packed_query[0]), T.address_of(query[0]), 16)
+                            packed_query[v] = B[(ko * reduce_k + kr) * (K_Tile // 2) + v,
+                                                by * N_Tile + (n * thread_num_x + tx)]
+                        T.call_extern("handle", "decode_i4u_to_i8s", T.address_of(packed_query[0]),
+                                      T.address_of(query[0]), 16)
                         for v in T.serial(query_vectorize_size * 2):
                             accum_res[n] += TABLE[bx, (ko * reduce_k + kr) * K_Tile + v, query[v]]
 
@@ -129,8 +146,7 @@ def main_nTile_kTile_threads_reducek(TABLE: T.Buffer(TABLE_shape, dtype_table), 
                         reduced_accum_res[0],
                         kr,
                         dtype="handle",
-                    )
-                )
+                    ))
                 if kr == 0:
                     accum_res[n] = reduced_accum_res[0]
             if kr == 0:

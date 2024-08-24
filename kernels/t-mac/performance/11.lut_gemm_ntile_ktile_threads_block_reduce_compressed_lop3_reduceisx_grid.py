@@ -1,3 +1,6 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+# ruff: noqa
 import torch
 import itertools
 import tqdm
@@ -53,7 +56,6 @@ min_time = 1e9
 min_combination = None
 sucess_combinations = []
 
-
 # out = mod.run_once()
 cuda_table = table_fp16.cuda()
 cuda_weight = weight_int4_interleaved.cuda()
@@ -66,10 +68,10 @@ for combination in pbar:
     num_warps = combination["num_warps"]
 
     try:
-    
+
         threads = num_warps * warp_size
 
-        query_vectorize_size = 8 # as we should fetch int8
+        query_vectorize_size = 8  # as we should fetch int8
         K_Tile = query_vectorize_size * 2
 
         thread_num_x = warp_size
@@ -79,13 +81,11 @@ for combination in pbar:
         assert (((K // GROUP) // thread_num_x) // K_Tile) > 0, "K_Tile is too large"
 
         @T.prim_func
-        def main_nTile_kTile_threads_reducek(TABLE: T.Buffer(TABLE_shape, dtype_table), B: T.Buffer(B_shape, dtype_b), C: T.Buffer((M, N), dtype_table)):
-            accum_res = T.alloc_fragment(
-                (N_Tile // num_warps), dtype_table, "local"
-            )
-            reduced_accum_res = T.alloc_fragment(
-            0, dtype_table, "local"
-            )
+        def main_nTile_kTile_threads_reducek(TABLE: T.Buffer(TABLE_shape, dtype_table),
+                                             B: T.Buffer(B_shape, dtype_b), C: T.Buffer(
+                                                 (M, N), dtype_table)):
+            accum_res = T.alloc_fragment((N_Tile // num_warps), dtype_table, "local")
+            reduced_accum_res = T.alloc_fragment(0, dtype_table, "local")
             packed_query = T.alloc_fragment((query_vectorize_size,), "int8", "local")
             query = T.alloc_fragment((query_vectorize_size * 2,), "int8", "local")
             # with T.Kernel(M, T.ceildiv(N, N_Tile), threads=threads) as (bx, by):
@@ -96,15 +96,19 @@ for combination in pbar:
             for no in T.serial(N_Tile // num_warps):
                 for ni in T.thread_binding(0, num_warps, thread="threadIdx.y"):
                     # for kr in T.serial(warp_size, annotations={"pragma_import_c": source}):
-                    for kr in T.thread_binding(0, warp_size, thread="threadIdx.x", annotations={"pragma_import_c": source}):
+                    for kr in T.thread_binding(
+                            0, warp_size, thread="threadIdx.x",
+                            annotations={"pragma_import_c": source}):
                         for ko in T.serial((((K // GROUP) // warp_size) // K_Tile)):
                             for v in T.vectorized(query_vectorize_size):
-                                packed_query[v] = B[
-                                    by * N_Tile + no * num_warps + ni, (ko * warp_size + kr) * query_vectorize_size + v
-                                ]
-                            T.call_extern("handle", "decode_i4u_to_i8s", T.address_of(packed_query[0]), T.address_of(query[0]), 16)
+                                packed_query[v] = B[by * N_Tile + no * num_warps + ni,
+                                                    (ko * warp_size + kr) * query_vectorize_size +
+                                                    v]
+                            T.call_extern("handle", "decode_i4u_to_i8s",
+                                          T.address_of(packed_query[0]), T.address_of(query[0]), 16)
                             for v in T.serial(query_vectorize_size * 2):
-                                accum_res[no] += TABLE[bx, (ko * warp_size + kr) * K_Tile + v, query[v]]
+                                accum_res[no] += TABLE[bx, (ko * warp_size + kr) * K_Tile + v,
+                                                       query[v]]
                         T.attr(
                             T.comm_reducer(lambda x, y: x + y, [T.float16(0)]),
                             "reduce_scope",
@@ -118,8 +122,7 @@ for combination in pbar:
                                 reduced_accum_res[0],
                                 kr,
                                 dtype="handle",
-                            )
-                        )
+                            ))
                         if kr == 0:
                             accum_res[no] = reduced_accum_res[0]
                         if kr == 0:

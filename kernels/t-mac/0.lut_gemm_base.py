@@ -1,4 +1,8 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+# ruff: noqa
 import torch
+
 torch.random.manual_seed(0)
 M = 1
 N = 128
@@ -12,10 +16,10 @@ weight_int4 = torch.zeros((N, K // GROUP), dtype=torch.int8, device="cuda")
 
 for n in range(N):
     for k in range(K // GROUP):
-        weight_chunk = weight_int1[n, k * GROUP : (k + 1) * GROUP]
+        weight_chunk = weight_int1[n, k * GROUP:(k + 1) * GROUP]
         weight_4bit = 0
         for i in range(GROUP):
-            weight_4bit |= (weight_chunk[i] << (GROUP-1-i))
+            weight_4bit |= (weight_chunk[i] << (GROUP - 1 - i))
         weight_int4[n, k] = weight_4bit
 
 ref_output = torch.matmul(input_fp16, weight_int1.T.to(torch.float16))
@@ -32,23 +36,34 @@ for k in range(K // GROUP):
     table_fp16[:, k, 4] = input_fp16[:, k * GROUP + 1]
     table_fp16[:, k, 5] = input_fp16[:, k * GROUP + 1] + input_fp16[:, k * GROUP + 3]
     table_fp16[:, k, 6] = input_fp16[:, k * GROUP + 1] + input_fp16[:, k * GROUP + 2]
-    table_fp16[:, k, 7] = input_fp16[:, k * GROUP + 1] + input_fp16[:, k * GROUP + 2] + input_fp16[:, k * GROUP + 3]
-    table_fp16[:, k, 8] = input_fp16[:, k * GROUP + 0] 
+    table_fp16[:, k,
+               7] = input_fp16[:, k * GROUP + 1] + input_fp16[:, k * GROUP +
+                                                              2] + input_fp16[:, k * GROUP + 3]
+    table_fp16[:, k, 8] = input_fp16[:, k * GROUP + 0]
     table_fp16[:, k, 9] = input_fp16[:, k * GROUP + 0] + input_fp16[:, k * GROUP + 3]
     table_fp16[:, k, 10] = input_fp16[:, k * GROUP + 0] + input_fp16[:, k * GROUP + 2]
-    table_fp16[:, k, 11] = input_fp16[:, k * GROUP + 0] + input_fp16[:, k * GROUP + 2] + input_fp16[:, k * GROUP + 3]
+    table_fp16[:, k,
+               11] = input_fp16[:, k * GROUP + 0] + input_fp16[:, k * GROUP +
+                                                               2] + input_fp16[:, k * GROUP + 3]
     table_fp16[:, k, 12] = input_fp16[:, k * GROUP + 0] + input_fp16[:, k * GROUP + 1]
-    table_fp16[:, k, 13] = input_fp16[:, k * GROUP + 0] + input_fp16[:, k * GROUP + 1] + input_fp16[:, k * GROUP + 3]
-    table_fp16[:, k, 14] = input_fp16[:, k * GROUP + 0] + input_fp16[:, k * GROUP + 1] + input_fp16[:, k * GROUP + 2]
-    table_fp16[:, k, 15] = input_fp16[:, k * GROUP + 0] + input_fp16[:, k * GROUP + 1] + input_fp16[:, k * GROUP + 2] + input_fp16[:, k * GROUP + 3]
-
+    table_fp16[:, k,
+               13] = input_fp16[:, k * GROUP + 0] + input_fp16[:, k * GROUP +
+                                                               1] + input_fp16[:, k * GROUP + 3]
+    table_fp16[:, k,
+               14] = input_fp16[:, k * GROUP + 0] + input_fp16[:, k * GROUP +
+                                                               1] + input_fp16[:, k * GROUP + 2]
+    table_fp16[:, k,
+               15] = input_fp16[:, k * GROUP +
+                                0] + input_fp16[:, k * GROUP +
+                                                1] + input_fp16[:, k * GROUP +
+                                                                2] + input_fp16[:, k * GROUP + 3]
 
 lut_output = torch.zeros((M, N), dtype=torch.float16, device="cuda")
 for m in range(M):
     for n in range(N):
         accum_res = 0
         for k in range(K // GROUP):
-            weight_chunk = weight_int1[n, k * GROUP: (k + 1) * GROUP]
+            weight_chunk = weight_int1[n, k * GROUP:(k + 1) * GROUP]
             index_weight = weight_chunk
             binary_str = ''.join(str(x.item()) for x in weight_chunk.cpu().numpy())
 
@@ -73,14 +88,17 @@ print("lut_output with int4:", lut_output)
 from bitblas import tvm as tvm
 from tvm import tl
 import tvm.tl.language as T
+
 TABLE_shape = (M, K // GROUP, 2**GROUP)
 dtype_table = "float16"
 B_shape = (N, K // GROUP)
 dtype_b = "int8"
 threads = 1
 
+
 @T.prim_func
-def main(TABLE: T.Buffer(TABLE_shape, dtype_table), B: T.Buffer(B_shape, dtype_b), C: T.Buffer((M, N), dtype_table)):
+def main(TABLE: T.Buffer(TABLE_shape, dtype_table), B: T.Buffer(B_shape, dtype_b), C: T.Buffer(
+    (M, N), dtype_table)):
     accum_res = T.alloc_fragment((1,), dtype_table, "local")
     query = T.alloc_fragment((1,), "int8", "local")
     with T.Kernel(M, N, threads=threads) as (bx, by):
